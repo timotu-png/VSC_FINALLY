@@ -53,9 +53,9 @@ MarketDataSource (ABC)
 | test_simulator.py | 17 | simulator.py: 98% |
 | test_simulator_source.py | 10 | (integration tests) |
 | test_factory.py | 7 | factory.py: 100% |
-| test_massive.py | 13 | massive_client.py: 56% (expected — API methods mocked) |
+| test_massive.py | 13 | massive_client.py: 94% (API methods mocked) |
 
-Overall coverage: 84%.
+Overall coverage: 91%.
 
 ## Code Review & Fixes Applied
 
