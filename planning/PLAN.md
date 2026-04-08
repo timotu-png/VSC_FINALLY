@@ -454,3 +454,82 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
+
+---
+
+## 13. Review Feedback (added by doc_review)
+
+This section captures questions, ambiguities, and simplification opportunities identified during a documentation review. None of it overrides the spec above — it is a punch list for the spec author to resolve before downstream agents start building the remaining components.
+
+### Questions & Clarifications
+
+**Market data / SSE cadence**
+- §6 says SSE pushes updates "at a regular cadence (~500ms)", but the Massive free tier polls every 15s. With Massive selected, what does the SSE stream actually push between polls? Options: (a) push only on cache change, (b) push every 500ms but most events are no-ops, (c) inherit the upstream cadence. The completed `stream.py` uses version-based change detection — the doc should match what's already built.
+- §6 says the cache is populated for "all tickers known to the system … equivalent to the user's watchlist", but positions can include tickers that have been removed from the watchlist, and the portfolio still needs live prices to value them. Clarify that the active ticker set = `watchlist ∪ positions`, and that removing a watchlist entry that is still held does **not** drop it from the data source.
+- "Daily change %" (§10 Watchlist panel) needs a defined anchor. The simulator does not model an "open" price. Is "daily" since process start? Since midnight UTC? Since first observed price? Pick one and document it.
+
+**Trade execution & error reporting from chat**
+- §9 says "If a trade fails validation … the error is included in the chat response so the LLM can inform the user." But by then the LLM has already produced its message and the actions are executed server-side after the fact. There are three possible interpretations — please pick one:
+  1. Errors are surfaced as system-attributed UI messages alongside the LLM's reply (no second LLM call).
+  2. The backend re-prompts the LLM with the failure and returns a revised message (extra latency, extra cost).
+  3. Failures are silently logged and the LLM's optimistic message is returned as-is (worst UX).
+- The `actions` JSON column on `chat_messages` should explicitly include success/failure status per action, not just the requested actions, so the UI can render confirmations vs errors deterministically.
+
+**Conversation history window**
+- §9 step 2 "Loads recent conversation history" is unbounded. Define a window (e.g., last 20 messages, or token-budget trim) so prompts don't grow forever.
+
+**Auto-execution scope**
+- §9 Auto-Execution allows the LLM to execute trades unprompted. Is there any guardrail (max trade size, max trades per response, max % of portfolio per trade)? With fake money the stakes are zero, but a runaway response that buys 100 different tickers would be a poor demo.
+
+**Selected ticker state**
+- The "main chart area" (§10) follows the currently selected ticker, but ownership of that state is not specified. Frontend-only (URL/local state) is the obvious choice — confirm, so the backend doesn't need a `selected_ticker` field.
+
+**Connection status indicator**
+- §2 specifies green/yellow/red dots for SSE connection state, but `EventSource` only exposes `readyState` (CONNECTING/OPEN/CLOSED) and `onerror`. Document how "reconnecting" (yellow) is distinguished from "disconnected" (red), or drop the third state.
+
+**Portfolio history retention**
+- `portfolio_snapshots` is written every 30s + on every trade. That's ~2,880 rows/day, ~1M/year. The P&L chart will not need that resolution. Specify a retention policy (e.g., keep raw for 24h, then downsample to 5-minute buckets), or accept unbounded growth and say so.
+- Same concern for `chat_messages` — no truncation defined.
+
+**Trade validation details**
+- §8 `POST /api/portfolio/trade` does not specify the error response shape, status codes, or whether `quantity` must be positive (and how negative is rejected). Nail down the contract before frontend and chat both consume it.
+
+**LLM mock contract**
+- §9 says mock mode returns "deterministic mock responses". Define the mock's behavior precisely (e.g., echoes the user message; specific phrases trigger specific actions) so E2E tests can rely on it.
+
+### Inconsistencies
+
+- **Charting library** (§10 Technical Notes): "Canvas-based charting library preferred (Lightweight Charts or Recharts)". Recharts is SVG, not canvas. Pick one — Lightweight Charts is the right answer if canvas performance is the goal.
+- **Schema redundancy**: `watchlist` and `positions` both have a UUID `id` PRIMARY KEY *and* a `UNIQUE (user_id, ticker)` constraint. The UUID is never referenced elsewhere — `(user_id, ticker)` would serve as a natural composite primary key. (See simplification note below.)
+- **Default `LLM_MOCK`** (§5): the example shows `LLM_MOCK=false`, but §9 only describes behavior when it equals `"true"`. Specify how empty/missing/other values are treated (presumably "anything other than `true` is false").
+
+### Gaps
+
+- No mention of what is shown in the Trade bar before submission (e.g., the live price for the typed ticker, or estimated cost = qty × price). Without that, users can't preview a market order they're about to send.
+- No max watchlist size. Pathological case: LLM adds 500 tickers, Massive free tier (5 calls/min) cannot poll them. Worth a soft cap (e.g., 50).
+- No rate limiting on `/api/chat`. With auto-execution enabled, a user (or test) hammering the endpoint could thrash the portfolio. Acceptable for a single-user demo, but call it out as accepted risk.
+- Concurrency between the snapshot background task and trade-handler writes is not discussed. SQLite + WAL handles this fine in practice, but confirm `journal_mode=WAL` is set during lazy init.
+- §11 lists both a `docker-compose.yml` ("optional convenience wrapper") and four start/stop scripts. That is three ways to start the app. Pick one canonical path.
+
+### Opportunities to Simplify
+
+1. **Drop `user_id` columns entirely.** The plan justifies them as "future multi-user support without schema migration," but the rest of the design (no auth, single SQLite file, hardcoded `"default"`) means multi-user is a much bigger change than `ALTER TABLE ADD COLUMN`. YAGNI: remove the column and the unique-constraint complexity now; add it back in the (unlikely) day multi-user actually lands. Saves a column on every table, every query, every test.
+2. **Drop UUID `id` columns where a natural key exists.** `watchlist` and `positions` should use `ticker` as the primary key (or `(user_id, ticker)` if you keep #1). `portfolio_snapshots` can use `recorded_at` as PK. Fewer columns, simpler inserts, no UUID generation.
+3. **Collapse `users_profile` to a single-row settings table** (or just a JSON file / a `meta` key-value table). One row with one meaningful column (`cash_balance`) does not need a primary key, a `created_at`, or a `users_profile` name implying plurality.
+4. **Pick one launcher.** Replace the four shell scripts + `docker-compose.yml` + raw `docker run` example with a single `docker-compose.yml` and a one-line README instruction (`docker compose up`). Compose is cross-platform, idempotent, and handles the volume/env/port wiring declaratively. That deletes ~4 files of duplicated logic.
+5. **Drop the "Optional Cloud Deployment" mention from §11** (or move it to a `STRETCH.md`). Stretch goals in a spec invite scope creep; the core build doesn't need it.
+6. **Remove the `actions` JSON column from `chat_messages`** if you decide error reporting works via UI-side rendering only. The trades table is already the source of truth for executed trades, and chat actions can be reconstructed by joining on timestamp / message id. Alternatively, *keep* `actions` and skip the join — but pick one storage location, not both.
+7. **Single charting library.** §10 mentions Lightweight Charts *and* Recharts. Pick Lightweight Charts for everything (main chart, sparklines, P&L chart) — one dependency, one mental model, consistent look.
+8. **Skip portfolio snapshot downsampling logic** by recording snapshots less often (e.g., every 5 minutes + on every trade). 288 rows/day instead of 2,880. The P&L chart does not need 30s resolution to look impressive.
+9. **Drop `previous_price` from the SSE event payload.** The frontend already accumulates the price stream for sparklines and can compute deltas locally. The backend cache can keep it for direction-change detection, but it doesn't need to cross the wire.
+10. **Use a single `state` field instead of separate connection-status colors.** Map `EventSource.readyState` directly: OPEN→green, CONNECTING→yellow, CLOSED→red. No custom reconnection bookkeeping, no third state to define.
+
+### Suggested Resolution Order
+
+Before any further build work, the spec author should resolve, in order:
+1. Schema simplifications (#1–#3) — they cascade into every backend test and migration.
+2. Trade-failure-from-chat semantics (Question above) — affects backend, frontend, and chat agent simultaneously.
+3. Charting library pick — affects the entire frontend bundle.
+4. Launcher consolidation — affects what scripts/docs the deployment agent writes.
+
+The remaining items are localized and can be answered as the corresponding components are built.
