@@ -30,11 +30,15 @@ Single Docker container serving everything on port 8000:
 cp .env.example .env
 # Add your OPENROUTER_API_KEY to .env
 
-# Run with Docker
-docker build -t finally .
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
+# Start the application
+docker compose up
 
 # Open http://localhost:8000
+```
+
+```bash
+docker compose down        # stop (data persists)
+docker compose down -v     # stop and delete all data
 ```
 
 ## Environment Variables
@@ -53,8 +57,7 @@ finally/
 ├── backend/     # FastAPI uv project
 ├── planning/    # Project documentation and agent contracts
 ├── test/        # Playwright E2E tests
-├── db/          # SQLite volume mount (runtime)
-└── scripts/     # Start/stop helpers
+└── db/          # SQLite volume mount (runtime)
 ```
 
 ## License
