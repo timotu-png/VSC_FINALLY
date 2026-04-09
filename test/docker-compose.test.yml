@@ -1,0 +1,27 @@
+version: '3.8'
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_MOCK=true
+      - OPENROUTER_API_KEY=mock
+    volumes:
+      - test-db:/app/db
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.49.0-jammy
+    working_dir: /tests
+    volumes:
+      - .:/tests
+    depends_on:
+      - app
+    command: npx playwright test
+    environment:
+      - BASE_URL=http://app:8000
+
+volumes:
+  test-db:
